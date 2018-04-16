@@ -50,7 +50,7 @@
 using System;
 using System.Threading;
 using Microsoft.SPOT;
-using CTRE.HERO.Module;
+using CTRE.Gadgeteer.Module;
 
 namespace Hero_DisplayBoard
 {
@@ -68,18 +68,36 @@ namespace Hero_DisplayBoard
         static CTRE.LEDStripController _LEDStripController = new CTRE.LEDStripController(CTRE.HERO.IO.Port3);
 
         /** Create a Pigeon IMU for Yaw, Pitch, and Roll (Pigeon over CAN defined with I.D.) */
-        static CTRE.PigeonImu _Pigeon = new CTRE.PigeonImu(0);
+        static CTRE.Phoenix.Sensors.PigeonImu _Pigeon = new CTRE.Phoenix.Sensors.PigeonImu(0);
 
         /** Create a Talon SRX for controlling the Driver Module (Talon defined with I.D.) */
-        static CTRE.TalonSrx _Talon = new CTRE.TalonSrx(0);
+        static CTRE.Phoenix.MotorControllers.TalonSrx _Talon = new CTRE.Phoenix.MotorControllers.TalonSrx(0);
         /** TalonID parameter for CommandLedStrip_Talon() */
         static int _TalonID = (int)_Talon.GetDeviceNumber();
 
         /** Create gamepad */
-        static CTRE.Gamepad _Gamepad = new CTRE.Gamepad(CTRE.UsbHostDevice.GetInstance());
+        static CTRE.Phoenix.Controller.GameController _Gamepad = new CTRE.Phoenix.Controller.GameController(CTRE.Phoenix.UsbHostDevice.GetInstance(1), 0);
 
         /** Create color sequence */
         static ColorSequencer _ColorSequencer = new ColorSequencer();
+
+        /** 2018 Additions */
+
+        /** Display Module, elements, and fonts*/
+        static DisplayModule _DisplayModule = new DisplayModule(CTRE.HERO.IO.Port8, DisplayModule.OrientationType.Landscape);
+        static DisplayModule.ResourceImageSprite _leftCrossHair, _rightCrossHair;
+        static DisplayModule.LabelSprite _labelTitle, _labelRow1, _labelRow2, _labelRow3;
+
+        /* Display Module fonts */
+        static Font _smallFont = Properties.Resources.GetFont(Properties.Resources.FontResources.small);
+        static Font _bigFont = Properties.Resources.GetFont(Properties.Resources.FontResources.NinaB);
+
+        /** Display Module gauges */
+        static VerticalGauge _leftY, _rightY;
+        static HorizGauge _leftX, _rightX;
+
+        static CTRE.Phoenix.CANifier _Canifier = new CTRE.Phoenix.CANifier(0);
+
 
         public static void Main()
         {
@@ -91,10 +109,39 @@ namespace Hero_DisplayBoard
             /* Variable for timing the flashes */
             byte i = 0;
 
+            int colorDelay = 0;
+
+            int x = 0;
+
+            _leftY = new VerticalGauge(_DisplayModule, 5, 5, 30, 10, DisplayModule.Color.Cyan, DisplayModule.Color.Blue);
+            _rightY = new VerticalGauge(_DisplayModule, 135, 5, 30, 10, DisplayModule.Color.Yellow, DisplayModule.Color.Red);
+
+
+            _leftX = new HorizGauge(_DisplayModule, 35, 30, 10, 30, DisplayModule.Color.Green, DisplayModule.Color.Magenta);
+            _rightX = new HorizGauge(_DisplayModule, 85, 30, 10, 30, DisplayModule.Color.Blue, DisplayModule.Color.Orange);
+
+            _leftCrossHair = _DisplayModule.AddResourceImageSprite(
+                                                           Hero_DisplayBoard.Properties.Resources.ResourceManager,
+                                                           Hero_DisplayBoard.Properties.Resources.BinaryResources.ch2,
+                                                           Bitmap.BitmapImageType.Jpeg,
+                                                           30, 100);
+
+            _rightCrossHair = _DisplayModule.AddResourceImageSprite(
+                                                           Hero_DisplayBoard.Properties.Resources.ResourceManager,
+                                                           Hero_DisplayBoard.Properties.Resources.BinaryResources.ch2,
+                                                           Bitmap.BitmapImageType.Jpeg,
+                                                           100, 100);
+
+            _labelTitle = _DisplayModule.AddLabelSprite(_bigFont, DisplayModule.Color.White, 40, 0, 80, 16);
+
+            _labelRow1 = _DisplayModule.AddLabelSprite(_smallFont, DisplayModule.Color.White, 30, 46, 100, 15);
+            _labelRow2 = _DisplayModule.AddLabelSprite(_smallFont, DisplayModule.Color.White, 30, 58, 100, 15);
+            _labelRow3 = _DisplayModule.AddLabelSprite(_smallFont, DisplayModule.Color.White, 30, 70, 100, 15);
+
             while (true)
             {
                 /* Determines if controller is connected */
-                if (_Gamepad.GetConnectionStatus() == CTRE.UsbDeviceConnection.Connected)
+                if (_Gamepad.GetConnectionStatus() == CTRE.Phoenix.UsbDeviceConnection.Connected)
                     /* Controller connected for Controller Mode */
                     OperationState = States.Controller;
                 else
@@ -103,24 +150,32 @@ namespace Hero_DisplayBoard
 
                 if (OperationState == States.Controller)
                 {
+                    CTRE.Phoenix.Watchdog.Feed();
+
+                    _labelTitle.SetText("Connected");
+                    _labelTitle.SetColor(DisplayModule.Color.Green);
+
                     /* X-Axis of left joystick for hue */
                     float LeftX = _Gamepad.GetAxis(0);
                     /* Y-Axis of left joystick for hue (Stick inverted) */
-                    float LeftY = -1f * _Gamepad.GetAxis(1);
+                    float LeftY = _Gamepad.GetAxis(1);
                     /* Y-Axis of right stick for brightness (Stick inverted)*/
-                    float RightY = -1f * _Gamepad.GetAxis(5);
+                    float RightY = _Gamepad.GetAxis(5);
+                    /* X-Axis of right stick for Display Module telmetry */
+                    float RightX = _Gamepad.GetAxis(2);
 
                     /* Deadband the 3 joysticks */
                     Deadband(ref LeftX);
                     Deadband(ref LeftY);
                     Deadband(ref RightY);
+                    Deadband(ref RightX);
 
                     if (LeftX != 0 || LeftY != 0)
                     {
                         /** Left joystick in use, stop color cycling and giver user control */
 
                         /* Grab brightness from the right joystick ([-1,1] + 1 * 0.5 => [0,1]) */
-                        float Brightness = (RightY + 1f) * 0.5f;
+                        float Brightness = (RightX + 1f) * 0.5f;
                         /* Update brightness for color cylcing */
                         _Brightness = Brightness;
                         /* Update LED strip with left joystick, right joystick, and brightness */
@@ -131,25 +186,73 @@ namespace Hero_DisplayBoard
                         /** Left joystick not in use, start color cycling */
 
                         /* You can change the sequence in ColorSequencer.cs by ordering the premade colors or creating your own values */
-                        _ColorSequencer.Process();
+                        colorDelay++;
+                        if(colorDelay >= 3)
+                        {
+                            _ColorSequencer.Process();
+                            colorDelay = 0;
+                        }
+
                         /* Go through a color sequence at half brightness when idle */
                         UpdateLedStrip(_Brightness, _ColorSequencer.Red, _ColorSequencer.Green, _ColorSequencer.Blue);
+                    }
+
+
+                    /* guages */
+                    UpdateGauge(_leftX, LeftX);
+                    UpdateGauge(_leftY, LeftY);
+                    UpdateGauge(_rightX, RightX);
+                    UpdateGauge(_rightY, RightY);
+
+                    _leftCrossHair.SetPosition((int)(30 + 15 * LeftX), 100 + (int)(15 * LeftY));
+                    _rightCrossHair.SetPosition((int)(100 + 15 * RightX), 100 + (int)(15 * RightY));
+
+                    int idx = GetFirstButton(_Gamepad);
+                    if (idx < 0)
+                    {
+                        _labelRow1.SetColor((DisplayModule.Color)0xA0A0A0); // gray RGB
+                        _labelRow2.SetColor((DisplayModule.Color)0xA0A0A0); // gray RGB
+                        _labelRow3.SetColor((DisplayModule.Color)0xA0A0A0); // gray RGB
+
+                        float[] ypr = new float[3];
+                        _Pigeon.GetYawPitchRoll(ypr);
+                        _labelRow1.SetText("Yaw:" + ypr[0]);
+                        _labelRow2.SetText("Pitch:" + ypr[1]);
+                        _labelRow3.SetText("Roll:" + ypr[2]);
+                    }
+                    else
+                    {
+                        switch (idx % 4)
+                        {
+                            case 0: _labelRow1.SetColor(DisplayModule.Color.Cyan); break;
+                            case 1: _labelRow1.SetColor(DisplayModule.Color.Green); break;
+                            case 2: _labelRow1.SetColor(DisplayModule.Color.Red); break;
+                            case 3: _labelRow1.SetColor(DisplayModule.Color.Yellow); break;
+
+                        }
+                        x++;
+                        _labelRow1.SetText("Pressed Button " + idx);
+                        _labelRow2.SetText("");
+                        _labelRow3.SetText("");
                     }
                 }
                 else if (OperationState == States.Pigeon)
                 {
+                    _labelTitle.SetText("No X Gamepad");
+                    _labelTitle.SetColor(DisplayModule.Color.Red);
+
                     /* Check status of Pigeon to see if it is connected */
-                    CTRE.PigeonImu.PigeonState _PigeonState = _Pigeon.GetState();
-                    if (_PigeonState == CTRE.PigeonImu.PigeonState.Ready)
+                    CTRE.Phoenix.Sensors.PigeonImu.PigeonState _PigeonState = _Pigeon.GetState();
+                    if (_PigeonState == CTRE.Phoenix.Sensors.PigeonImu.PigeonState.Ready)
                     {
                         /** Pigeon connected, giver user tilt control */
 
                         /* Pull Yaw, Pitch, and Roll from Pigeon */
                         float[] YPR = new float[3];
                         _Pigeon.GetYawPitchRoll(YPR);
-                        float Yaw = YPR[0];
-                        float Pitch = YPR[1];
-                        float Roll = YPR[2];
+                        float Yaw = YPR[0] * 0.1f;
+                        float Pitch = YPR[1] * 0.1f;
+                        float Roll = YPR[2] * 0.1f;
 
                         /* Mulitply Pitch and Roll by PI and divide by 180 to get radians for trig functions */
                         float CPitch = Pitch * (float)System.Math.PI / 180;
@@ -187,8 +290,6 @@ namespace Hero_DisplayBoard
                             UpdateLedStrip(1, 0, 0, 0);
                     }
                 }
-                /** Quick sleep */
-                Thread.Sleep(5);
             }
         }
 
@@ -216,6 +317,11 @@ namespace Hero_DisplayBoard
             _LEDStripController.Process();
             /* Update the LED strip through Talon SRX */
             CommandLedStrip_Talon(R, G, B, 10, _TalonID);
+
+            /* update CANifier's LED strip */
+            _Canifier.SetLEDOutput(R, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelB);
+            _Canifier.SetLEDOutput(G, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelA);
+            _Canifier.SetLEDOutput(B, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelC);
         }
 
         /**
@@ -271,6 +377,11 @@ namespace Hero_DisplayBoard
             _LEDStripController.Process();
             /* Update the LED strip through Talon SRX */
             CommandLedStrip_Talon(Red, Green, Blue, 10, _TalonID);
+
+            /* update CANifier's LED strip */
+            _Canifier.SetLEDOutput(Red, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelB);
+            _Canifier.SetLEDOutput(Green, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelA);
+            _Canifier.SetLEDOutput(Blue, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelC);
         }
 
         /**
@@ -281,7 +392,7 @@ namespace Hero_DisplayBoard
         static void UpdateLedStrip_Pigeon(float Hue)
         {
             /* 75% brigtness */
-            float Brightness = 0.75f;
+            float Brightness = 0.50f;
             /* Hue provided angle from pigeon */
             float HueDeg = Hue;
             /* Constant saturation */
@@ -307,6 +418,11 @@ namespace Hero_DisplayBoard
             _LEDStripController.Process();
             /* Update the LED strip through Talon SRX */
             CommandLedStrip_Talon(Red, Green, Blue, 10, _TalonID);
+
+            /* update CANifier's LED strip */
+            _Canifier.SetLEDOutput(Red, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelB);
+            _Canifier.SetLEDOutput(Green, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelA);
+            _Canifier.SetLEDOutput(Blue, CTRE.Phoenix.CANifier.LEDChannel.LEDChannelC);
         }
 
         /** 
@@ -364,6 +480,28 @@ namespace Hero_DisplayBoard
             else
                 /* Within deadband, return 0 */
                 f = 0;
+        }
+
+        static public void UpdateGauge(HorizGauge gauge, float axis)
+        {
+            axis += 1.0f; // [0,2]
+            axis *= 0.5f; // [0,1]
+            gauge.Value = (int)(axis * gauge.MaxValue);
+        }
+        static public void UpdateGauge(VerticalGauge gauge, float axis)
+        {
+            axis += 1.0f; // [0,2]
+            axis *= 0.5f; // [0,1]
+            gauge.Value = (int)(axis * gauge.MaxValue);
+        }
+        static public int GetFirstButton(CTRE.Phoenix.Controller.GameController gamepad)
+        {
+            for (uint i = 0; i < 16; ++i)
+            {
+                if (gamepad.GetButton(i))
+                    return (int)i;
+            }
+            return -1;
         }
     }
 }
